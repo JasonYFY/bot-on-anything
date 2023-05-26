@@ -7,11 +7,11 @@ from channel.channel import Channel
 from concurrent.futures import ThreadPoolExecutor
 import os
 
-
-
 robot = werobot.WeRoBot(token=channel_conf(const.WECHAT_MP).get('token'))
 thread_pool = ThreadPoolExecutor(max_workers=8)
 cache = {}
+waitTimeCache = {}
+
 
 @robot.text
 def hello_world(msg):
@@ -69,21 +69,45 @@ class WechatSubsribeAccount(Channel):
             if count == 5:
                 # 第5秒不做返回，防止消息发送出去了但是微信已经中断连接
                 return None
-            return self.handle(msg, count+1)
+            return self.handle(msg, count + 1)
 
     def _do_send(self, query, context):
         key = query + '|' + context['from_user_id']
         reply_text = super().build_reply_content(query, context)
         logger.info('[WX_Public] reply content: {}'.format(reply_text))
-        cache[key]['status'] = "success"
         cache[key]['data'] = reply_text
+        cache[key]['status'] = "success"
+
 
     def get_un_send_content(self, from_user_id):
         for key in cache:
             if from_user_id in key:
+                if waitTimeCache.get(key):
+                    # 记录次数
+                    waitTimeCache.get(key)['req_times'] += 1
+                else:
+                    waitTimeCache[key] = {"req_times": 1}
+
                 value = cache[key]
                 if value.get('status') == "success":
                     cache.pop(key)
+                    waitTimeCache.pop(key)
                     return value.get("data")
-                return "还在处理中，请稍后再试"
+                waitTime = waitTimeCache.get(key)['req_times']
+
+                for i in range(5):
+                    logger.info("[继续]还未有结果，等待1s再查询,count:{},waitTime:{}".format(i, waitTime))
+                    time.sleep(1)
+                    if waitTime == 3 and i >= 3:
+                        waitTimeCache.pop(key)
+                        return "还在处理中，请稍后再回复\"继续\""
+                    if i == 5:
+                        # 第5秒不做返回，防止消息发送出去了但是微信已经中断连接
+                        return None
+                    value = cache[key]
+                    if value.get('status') == "success":
+                        cache.pop(key)
+                        waitTimeCache.pop(key)
+                        return value.get("data")
         return "目前无等待回复信息，请输入对话"
+
